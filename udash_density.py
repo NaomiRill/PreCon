@@ -9,6 +9,8 @@ Example
 >>> df.head()
 """
 from __future__ import annotations
+# Postpone evaluation of annotations so the type hints below (including
+# | unions and forward references in return annotations) work on Python 3.8+.
 
 from dataclasses import dataclass
 from pathlib import Path
