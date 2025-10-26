@@ -40,8 +40,6 @@ __all__ = [
     "preview_profile_metadata",
     "preview_level_samples",
     "plot_teos10_diagnostics",
-    "plot_density_maps_for_year",
-    "notebook_density_map_cell",
     "save_teos10_variables",
 ]
 
@@ -348,176 +346,6 @@ def plot_teos10_diagnostics(
     return fig, axes  # I return both figure and axes so the caller can tweak them.
 
 
-def plot_density_maps_for_year(
-    df: pd.DataFrame,
-    *,
-    year: Optional[int] = None,
-    depth_bins: Sequence[float] = (0.0, 50.0, 200.0, 1000.0, 6000.0),
-    cmap: str = "viridis",
-    figsize: tuple[float, float] = (12.0, 10.0),
-    marker_size: float = 15.0,
-) -> tuple["matplotlib.figure.Figure", Sequence["matplotlib.axes.Axes"]]:
-    """I draw small multiple maps so I can see how density changes with depth ranges."""
-
-    import matplotlib.pyplot as plt  # I pull in matplotlib right when I need to draw maps.
-
-    try:  # I try to import cartopy so I can get coastlines and nice projections.
-        import cartopy.crs as ccrs
-        import cartopy.feature as cfeature
-    except ImportError:  # I fall back to None when cartopy is unavailable and degrade gracefully.
-        ccrs = None
-        cfeature = None
-
-    timestamp_column = UDASH_COLUMNS["timestamp"]  # I grab the timestamp column name so I can filter by year.
-    timestamps = pd.to_datetime(
-        df.get(timestamp_column, pd.Series(dtype="object")), errors="coerce"
-    )  # I convert timestamps to datetime while letting invalid entries become NaT.
-
-    if year is not None:  # I only filter when the caller actually supplied a year.
-        mask = timestamps.dt.year == year  # I build a boolean mask for the requested year.
-        df = df.loc[mask].copy()  # I subset the DataFrame so only the target year remains.
-
-    if df.empty:  # I bail out early when there is nothing to plot.
-        raise ValueError("No profile levels available for the requested year")
-
-    depth_column = UDASH_COLUMNS["depth_m"]  # I remember which column stores depth.
-    density_column = "Density_kg_m3"  # I keep the density column label handy for clarity.
-
-    if depth_column not in df.columns or density_column not in df.columns:  # I verify the required columns exist.
-        raise KeyError("Depth and density columns must be present before mapping")
-
-    depth_bins = list(depth_bins)  # I copy the bins so I can tweak the first and last edges safely.
-    if depth_bins[0] > df[depth_column].min():  # I ensure the shallowest level is included.
-        depth_bins[0] = df[depth_column].min()
-    if depth_bins[-1] < df[depth_column].max():  # I extend the deepest edge when necessary.
-        depth_bins[-1] = df[depth_column].max()
-
-    bin_labels = []  # I prepare human-readable labels for the legend and titles.
-    for start, end in zip(depth_bins[:-1], depth_bins[1:]):  # I walk through each adjacent bin pair.
-        bin_labels.append(f"{start:.0f}-{end:.0f} m")  # I format a label like "0-50 m".
-
-    df = df.copy()  # I copy so I can add helper columns without mutating the caller's DataFrame.
-    df["depth_bin"] = pd.cut(  # I categorise each row into the provided depth bins.
-        df[depth_column], bins=depth_bins, include_lowest=True, labels=bin_labels
-    )
-
-    binned = df.dropna(subset=["depth_bin"])  # I remove rows that fell outside the bin range.
-    if binned.empty:  # I make sure there is still data left after binning.
-        raise ValueError("Depth binning removed all rows; adjust depth_bins")
-
-    grouped = (
-        binned.groupby("depth_bin", observed=True)[
-            [
-                UDASH_COLUMNS["longitude_deg"],
-                UDASH_COLUMNS["latitude_deg"],
-                density_column,
-            ]
-        ]
-        .mean()
-        .reset_index()
-    )  # I average longitude, latitude, and density within each bin to keep the map clean.
-
-    if grouped.empty:  # I double-check that grouping delivered something usable.
-        raise ValueError("No grouped density values available for mapping")
-
-    n_bins = len(grouped["depth_bin"].unique())  # I count how many panels I will need.
-    n_cols = 2  # I decide to show two maps per row for a balanced layout.
-    n_rows = int(np.ceil(n_bins / n_cols))  # I compute how many rows that layout requires.
-
-    if ccrs is not None:  # I branch depending on whether cartopy is installed.
-        projection = ccrs.NorthPolarStereo()  # I pick a polar projection to highlight Arctic data.
-        plate_carree = ccrs.PlateCarree()  # I keep a PlateCarree reference for plotting points.
-        fig, axes = plt.subplots(
-            n_rows,
-            n_cols,
-            figsize=figsize,
-            subplot_kw={"projection": projection},
-        )  # I create subplots with the chosen projection.
-    else:
-        fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize)  # I fall back to plain subplots when cartopy is missing.
-
-    axes = np.atleast_1d(axes).ravel()  # I flatten the axes array so I can loop cleanly.
-
-    for ax, (depth_bin, subset) in zip(
-        axes, grouped.groupby("depth_bin")
-    ):  # I loop over each depth bin and its averaged data.
-        if ccrs is not None:  # I draw coastlines and features when cartopy is ready.
-            ax.set_extent([-180, 180, 60, 90], crs=plate_carree)  # I focus the map on the Arctic latitudes.
-            ax.add_feature(cfeature.LAND, facecolor="#f0f0f0")  # I shade land for context.
-            ax.add_feature(cfeature.OCEAN, facecolor="#ddeeff")  # I tint the ocean background lightly.
-            ax.add_feature(cfeature.COASTLINE, linewidth=0.6)  # I outline coastlines for geography.
-            scatter = ax.scatter(
-                subset[UDASH_COLUMNS["longitude_deg"]],
-                subset[UDASH_COLUMNS["latitude_deg"]],
-                c=subset[density_column],
-                cmap=cmap,
-                s=marker_size,
-                transform=plate_carree,
-            )  # I plot the density markers in geographic coordinates.
-            ax.gridlines(draw_labels=False, linewidth=0.3, color="gray", alpha=0.5)  # I add subtle graticules.
-        else:
-            ax.scatter(
-                subset[UDASH_COLUMNS["longitude_deg"]],
-                subset[UDASH_COLUMNS["latitude_deg"]],
-                c=subset[density_column],
-                cmap=cmap,
-                s=marker_size,
-            )  # I plot density markers on a simple latitude/longitude plane.
-            ax.set_xlim(-180, 180)  # I bound longitudes to world limits.
-            ax.set_ylim(-90, 90)  # I bound latitudes similarly.
-            ax.set_xlabel("Longitude [deg]")  # I label the axes since there is no map frame.
-            ax.set_ylabel("Latitude [deg]")
-            ax.set_aspect("equal", adjustable="box")  # I keep the map proportions sensible.
-            scatter = ax.collections[0]  # I reuse the scatter object for the colorbar.
-
-        ax.set_title(f"Density {depth_bin}")  # I title each panel with its depth range.
-
-    for ax in axes[n_bins:]:  # I hide any leftover axes that were not used.
-        ax.remove()
-
-    cbar = fig.colorbar(
-        scatter, ax=axes[:n_bins], orientation="horizontal", fraction=0.05, pad=0.07
-    )  # I attach one shared colorbar across the used panels.
-    cbar.set_label("Density [kg/m³]")  # I label the colorbar so the units are obvious.
-
-    title_year = year if year is not None else "all years"  # I prepare the figure title reference.
-    fig.suptitle(f"Mean density by depth bin ({title_year})", y=0.98)  # I give the figure a descriptive title.
-    fig.tight_layout(rect=[0.0, 0.0, 1.0, 0.95])  # I tighten the layout so everything fits neatly.
-
-    return fig, axes[:n_bins]  # I return the figure and only the populated axes.
-
-
-def notebook_density_map_cell(
-    df: pd.DataFrame,
-    *,
-    year: Optional[int] = None,
-    depth_bins: Sequence[float] = (
-        0.0,
-        50.0,
-        200.0,
-        1000.0,
-        6000.0,
-    ),
-    cmap: str = "viridis",
-    figsize: tuple[float, float] = (12.0, 10.0),
-    marker_size: float = 15.0,
-):
-    """I call this from a fresh notebook cell when I want to see the maps immediately."""
-
-    import matplotlib.pyplot as plt  # I import matplotlib inside the helper so notebooks stay fast to import.
-
-    fig, axes = plot_density_maps_for_year(
-        df,
-        year=year,
-        depth_bins=depth_bins,
-        cmap=cmap,
-        figsize=figsize,
-        marker_size=marker_size,
-    )  # I reuse the heavy lifting function so this wrapper stays tiny and focused on plotting.
-    plt.show()  # I actually display the figure right here because this helper is meant for notebook cells.
-    return fig, axes  # I still hand back the figure and axes in case I want to tweak them afterwards.
-
-
 if __name__ == "__main__":  # I only run this orchestration block during direct execution.
     # I execute this block when I run "%run udash_density.py" in a notebook.
     df = load_default_profile()  # I load the configured profile and compute TEOS-10 diagnostics.
@@ -560,14 +388,12 @@ if __name__ == "__main__":  # I only run this orchestration block during direct 
     fig, _ = plot_teos10_diagnostics(df)  # I create the scatter plots for the TEOS-10 diagnostics.
     fig.suptitle(f"TEOS-10 diagnostics for {file_name}", y=0.98)  # I add a shared title that mentions the file.
     fig.tight_layout(rect=[0.0, 0.0, 1.0, 0.96])  # I tighten again so the title and plots fit nicely.
-    plt.show()  # I display the figure in the notebook output.
 
-    year_values = pd.to_datetime(
-        df[UDASH_COLUMNS["timestamp"]], errors="coerce"
-    ).dt.year.dropna()  # I extract the year values so I can pick one for mapping.
-    target_year = int(year_values.iloc[0]) if not year_values.empty else None  # I pick the first valid year if available.
+    figs_dir = Path("D_figs")  # I point to the directory where I want to keep the plot exports.
+    figs_dir.mkdir(parents=True, exist_ok=True)  # I make sure the directory exists before trying to save anything.
+    figure_path = figs_dir / f"{Path(file_name).stem}_teos10_plots.png"  # I build the output path that matches the profile name.
+    fig.savefig(figure_path, dpi=300)  # I save the combined figure so the three diagnostics live on disk.
+    df.attrs["diagnostic_figure_path"] = str(figure_path)  # I stash the saved figure path for quick reference in the notebook.
+    print(f"Saved TEOS-10 diagnostic figure to: {figure_path}")  # I confirm the export location right in the console.
 
-    print("\nNext step (run this in a fresh notebook cell):")  # I guide myself to the mapping helper without running it here.
-    suggested_year = target_year if target_year is not None else "None"  # I choose the year hint for the printed snippet.
-    print("from udash_density import notebook_density_map_cell")  # I remind myself of the import I will need.
-    print(f"notebook_density_map_cell(df, year={suggested_year})")  # I show the exact call I can paste into the new cell.
+    plt.show()  # I display the figure in the notebook output after saving it.
