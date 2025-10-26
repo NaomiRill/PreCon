@@ -391,7 +391,8 @@ if __name__ == "__main__":  # I only run this orchestration block during direct 
 
     figs_dir = Path("D_figs")  # I point to the directory where I want to keep the plot exports.
     figs_dir.mkdir(parents=True, exist_ok=True)  # I make sure the directory exists before trying to save anything.
-    figure_path = figs_dir / f"{Path(file_name).stem}_teos10_plots.png"  # I build the output path that matches the profile name.
+    profile_year = _infer_profile_year(df)  # I reuse the same helper so the plot filename starts with the year.
+    figure_path = figs_dir / f"{profile_year}_{Path(file_name).stem}_teos10_plots.png"  # I build the output path with the year first.
     fig.savefig(figure_path, dpi=300)  # I save the combined figure so the three diagnostics live on disk.
     df.attrs["diagnostic_figure_path"] = str(figure_path)  # I stash the saved figure path for quick reference in the notebook.
     print(f"Saved TEOS-10 diagnostic figure to: {figure_path}")  # I confirm the export location right in the console.
