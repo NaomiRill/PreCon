@@ -31,6 +31,7 @@ __all__ = [
     "iter_profile_metadata",
     "summarize_profiles",
     "preview_profile_metadata",
+    "preview_level_samples",
     "plot_teos10_diagnostics",
     "save_teos10_variables",
 ]
@@ -157,7 +158,12 @@ def save_teos10_variables(
         "Absolute_Salinity_g_kg",
         "Conservative_Temp_degC",
         "Density_kg_m3",
-    ]].to_csv(output_path, sep="\t", index=False, float_format="%.6f")
+    ]].to_csv(
+        output_path,
+        sep="\t",
+        index=False,
+        float_format="%.6f",
+    )
     return output_path
 
 
@@ -187,6 +193,9 @@ def load_udash_file(
     pandas.DataFrame
         Table containing the raw UDASH variables plus Absolute Salinity,
         Conservative Temperature, and in-situ density (kg/m³).
+        When ``save_output`` is ``True`` the returned DataFrame contains a
+        ``"teos10_output_path"`` entry in ``df.attrs`` pointing at the saved
+        text file.
     """
 
     path = Path(path)
@@ -206,7 +215,12 @@ def load_udash_file(
     df.insert(0, "source_file", path.name)
 
     if save_output:
-        save_teos10_variables(df, source_path=path, output_root=output_root)
+        output_path = save_teos10_variables(
+            df,
+            source_path=path,
+            output_root=output_root,
+        )
+        df.attrs["teos10_output_path"] = str(output_path)
     return df
 
 
@@ -248,6 +262,24 @@ def preview_profile_metadata(
     if max_rows is not None:
         preview = preview.head(max_rows)
     return preview
+
+
+def preview_level_samples(
+    df: pd.DataFrame,
+    *,
+    samples: int = 12,
+) -> pd.DataFrame:
+    """Return an evenly spaced subset of profile levels for console previews."""
+
+    if samples <= 0 or df.empty:
+        return df.head(0)
+
+    if samples >= len(df):
+        return df
+
+    indices = np.linspace(0, len(df) - 1, samples)
+    unique_indices = np.unique(indices.round().astype(int))
+    return df.iloc[unique_indices]
 
 
 def iter_profile_metadata(df: pd.DataFrame) -> Iterable[UDASHProfileMetadata]:
@@ -305,7 +337,7 @@ def plot_teos10_diagnostics(
     share_depth_axis: bool = True,
     figsize: tuple[float, float] = (7.0, 9.0),
     marker: str = "o",
-    marker_size: float = 6.0,
+    marker_size: float = 1.5,
 ) -> tuple["matplotlib.figure.Figure", Sequence["matplotlib.axes.Axes"]]:
     """Plot TEOS-10 diagnostic columns against depth using matplotlib."""
 
@@ -353,6 +385,14 @@ if __name__ == "__main__":
     print("Profile overview:")
     print(preview_profile_metadata(df, max_rows=None))
     print()
+    print("Sampled profile levels:")
+    with pd.option_context("display.max_columns", None):
+        print(preview_level_samples(df, samples=12))
+    print()
+    output_path = df.attrs.get("teos10_output_path")
+    if output_path:
+        print(f"Saved TEOS-10 variables to: {output_path}")
+        print()
     print("Density summary:")
     print(
         summarize_profiles(df, by=None)[
