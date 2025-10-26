@@ -85,31 +85,11 @@ def _append_teos10_columns(df: pd.DataFrame) -> pd.DataFrame:
     """Compute Absolute Salinity, Conservative Temperature, and density."""
 
     salinity = df[UDASH_COLUMNS["salinity_psu"]].to_numpy(dtype=float)
-    negative_salinity = salinity < 0
-    if np.any(negative_salinity):
-        warnings.warn(
-            "Practical Salinity contained negative values; clipping to zero per TEOS-10 guidance.",
-            RuntimeWarning,
-            stacklevel=2,
-        )
-        salinity = salinity.copy()
-        salinity[negative_salinity] = 0.0
-
     pressure = df[UDASH_COLUMNS["pressure_dbar"]].to_numpy(dtype=float)
     longitude = df[UDASH_COLUMNS["longitude_deg"]].to_numpy(dtype=float)
     latitude = df[UDASH_COLUMNS["latitude_deg"]].to_numpy(dtype=float)
 
     SA = gsw.SA_from_SP(salinity, pressure, longitude, latitude)
-    negative_absolute = SA < 0
-    if np.any(negative_absolute):
-        warnings.warn(
-            "Absolute Salinity below zero encountered; clipping to zero per TEOS-10 manual (IOC, 2010).",
-            RuntimeWarning,
-            stacklevel=2,
-        )
-        SA = SA.copy()
-        SA[negative_absolute] = 0.0
-
     temperature = df[UDASH_COLUMNS["temperature_degC"]].to_numpy(dtype=float)
     CT = gsw.CT_from_t(SA, temperature, pressure)
     rho = gsw.rho(SA, CT, pressure)
@@ -154,11 +134,17 @@ def save_teos10_variables(
     target_dir.mkdir(parents=True, exist_ok=True)
 
     output_path = target_dir / f"{source_path.stem}_teos10.txt"
-    df[[
+    export_columns = [
+        UDASH_COLUMNS["longitude_deg"],
+        UDASH_COLUMNS["latitude_deg"],
+        UDASH_COLUMNS["pressure_dbar"],
+        UDASH_COLUMNS["depth_m"],
         "Absolute_Salinity_g_kg",
         "Conservative_Temp_degC",
         "Density_kg_m3",
-    ]].to_csv(
+    ]
+    available_columns = [column for column in export_columns if column in df.columns]
+    df[available_columns].to_csv(
         output_path,
         sep="\t",
         index=False,
@@ -201,8 +187,21 @@ def load_udash_file(
     path = Path(path)
     df = _read_udash_text(path, missing_value=missing_value)
 
+    salinity_column = UDASH_COLUMNS["salinity_psu"]
+    if salinity_column in df.columns:
+        salinity_values = pd.to_numeric(df[salinity_column], errors="coerce")
+        negative_mask = salinity_values < 0
+        if negative_mask.any():
+            warnings.warn(
+                "Negative practical salinity values found; treating them as missing before TEOS-10 calculations.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            salinity_values[negative_mask] = np.nan
+        df[salinity_column] = salinity_values
+
     required = [
-        UDASH_COLUMNS["salinity_psu"],
+        salinity_column,
         UDASH_COLUMNS["temperature_degC"],
         UDASH_COLUMNS["pressure_dbar"],
         UDASH_COLUMNS["longitude_deg"],
@@ -386,7 +385,7 @@ if __name__ == "__main__":
     print(preview_profile_metadata(df, max_rows=None))
     print()
     print("Sampled profile levels:")
-    with pd.option_context("display.max_columns", None):
+    with pd.option_context("display.max_columns", None, "display.width", None):
         print(preview_level_samples(df, samples=12))
     print()
     output_path = df.attrs.get("teos10_output_path")
