@@ -41,6 +41,7 @@ __all__ = [
     "preview_level_samples",
     "plot_teos10_diagnostics",
     "plot_density_maps_for_year",
+    "notebook_density_map_cell",
     "save_teos10_variables",
 ]
 
@@ -486,6 +487,37 @@ def plot_density_maps_for_year(
     return fig, axes[:n_bins]  # I return the figure and only the populated axes.
 
 
+def notebook_density_map_cell(
+    df: pd.DataFrame,
+    *,
+    year: Optional[int] = None,
+    depth_bins: Sequence[float] = (
+        0.0,
+        50.0,
+        200.0,
+        1000.0,
+        6000.0,
+    ),
+    cmap: str = "viridis",
+    figsize: tuple[float, float] = (12.0, 10.0),
+    marker_size: float = 15.0,
+):
+    """I call this from a fresh notebook cell when I want to see the maps immediately."""
+
+    import matplotlib.pyplot as plt  # I import matplotlib inside the helper so notebooks stay fast to import.
+
+    fig, axes = plot_density_maps_for_year(
+        df,
+        year=year,
+        depth_bins=depth_bins,
+        cmap=cmap,
+        figsize=figsize,
+        marker_size=marker_size,
+    )  # I reuse the heavy lifting function so this wrapper stays tiny and focused on plotting.
+    plt.show()  # I actually display the figure right here because this helper is meant for notebook cells.
+    return fig, axes  # I still hand back the figure and axes in case I want to tweak them afterwards.
+
+
 if __name__ == "__main__":  # I only run this orchestration block during direct execution.
     # I execute this block when I run "%run udash_density.py" in a notebook.
     df = load_default_profile()  # I load the configured profile and compute TEOS-10 diagnostics.
@@ -535,15 +567,7 @@ if __name__ == "__main__":  # I only run this orchestration block during direct 
     ).dt.year.dropna()  # I extract the year values so I can pick one for mapping.
     target_year = int(year_values.iloc[0]) if not year_values.empty else None  # I pick the first valid year if available.
 
-    try:  # I wrap the map plotting in a try block so missing dependencies do not crash the script.
-        map_fig, _ = plot_density_maps_for_year(df, year=target_year)  # I build the density maps for the chosen year.
-    except Exception as exc:  # I catch any issues (like missing cartopy) and report them gently.
-        warnings.warn(f"Skipping density maps: {exc}", RuntimeWarning, stacklevel=2)
-    else:
-        map_title = (
-            f"Density maps for {file_name} ({target_year})"
-            if target_year is not None
-            else f"Density maps for {file_name}"
-        )  # I compose a clear figure title depending on whether a year was known.
-        map_fig.suptitle(map_title, y=0.99)  # I slightly adjust the title so it sits nicely above the maps.
-        plt.show()  # I display the density map figure as well.
+    print("\nNext step (run this in a fresh notebook cell):")  # I guide myself to the mapping helper without running it here.
+    suggested_year = target_year if target_year is not None else "None"  # I choose the year hint for the printed snippet.
+    print("from udash_density import notebook_density_map_cell")  # I remind myself of the import I will need.
+    print(f"notebook_density_map_cell(df, year={suggested_year})")  # I show the exact call I can paste into the new cell.
