@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable, Optional, Sequence
+from typing import Iterable, Optional, Sequence
 
 import pandas as pd
 import gsw
@@ -25,12 +25,10 @@ __all__ = [
     "DEFAULT_UDASH_FILE",
     "load_udash_file",
     "load_arctic_ocean_profile",
-    "profile_metadata_table",
-    "georeference_levels",
-    "aggregate_profiles",
-    "plot_profile_location_map",
-    "plot_profile_variable_map",
-    "plot_profile_diagnostic_maps",
+    "iter_profile_metadata",
+    "summarize_profiles",
+    "preview_profile_metadata",
+    "plot_teos10_diagnostics",
 ]
 
 # Column names used in UDASH tab-separated exports. Keeping them in one
@@ -160,13 +158,12 @@ def load_arctic_ocean_profile(
     )
 
 
-def profile_metadata_table(df: pd.DataFrame) -> pd.DataFrame:
-    """Return the unique profile metadata combinations in ``df``.
-
-    The resulting table is useful for quickly inspecting which profiles and
-    deployments are present in the dataset, mirroring the columns the user
-    requested to view in the notebook output.
-    """
+def preview_profile_metadata(
+    df: pd.DataFrame,
+    *,
+    max_rows: Optional[int] = 10,
+) -> pd.DataFrame:
+    """Return distinct profile metadata rows for quick inspection."""
 
     columns = [
         "source_file",
@@ -176,12 +173,10 @@ def profile_metadata_table(df: pd.DataFrame) -> pd.DataFrame:
         UDASH_COLUMNS["platform"],
         UDASH_COLUMNS["instrument_type"],
     ]
-    metadata = (
-        df.loc[:, columns]
-        .drop_duplicates()
-        .reset_index(drop=True)
-    )
-    return metadata
+    preview = df.loc[:, columns].drop_duplicates().reset_index(drop=True)
+    if max_rows is not None:
+        preview = preview.head(max_rows)
+    return preview
 
 
 def iter_profile_metadata(df: pd.DataFrame) -> Iterable[UDASHProfileMetadata]:
@@ -227,164 +222,7 @@ def summarize_profiles(
     return summary
 
 
-def georeference_levels(
-    df: pd.DataFrame,
-    *,
-    longitude_column: str = UDASH_COLUMNS["longitude_deg"],
-    latitude_column: str = UDASH_COLUMNS["latitude_deg"],
-    crs: str = "EPSG:4326",
-) -> "gpd.GeoDataFrame":
-    """Attach geographic point geometry to each UDASH level.
-
-    Parameters
-    ----------
-    df:
-        DataFrame returned by :func:`load_udash_file`.
-    longitude_column, latitude_column:
-        Column names containing the geographic coordinates.
-    crs:
-        Coordinate reference system for the resulting GeoDataFrame. The
-        default ``"EPSG:4326"`` corresponds to WGS84 longitude/latitude.
-
-    Returns
-    -------
-    geopandas.GeoDataFrame
-        Input data with an added ``geometry`` column of ``Point`` objects.
-    """
-
-    try:
-        import geopandas as gpd
-        from shapely.geometry import Point
-    except ImportError as exc:  # pragma: no cover - optional dependency
-        raise ImportError(
-            "geopandas and shapely are required for georeferencing; install them"
-            " via `pip install geopandas shapely`."
-        ) from exc
-
-    geometry = [
-        Point(lon, lat)
-        for lon, lat in zip(df[longitude_column].to_numpy(), df[latitude_column].to_numpy())
-    ]
-
-    gdf = gpd.GeoDataFrame(df.copy(), geometry=geometry, crs=crs)
-    return gdf
-
-
-def aggregate_profiles(
-    df: pd.DataFrame,
-    *,
-    aggregator: str | Callable[[pd.Series], float] = "mean",
-    value_columns: Sequence[str] = (
-        "Density_kg_m3",
-        "Conservative_Temp_degC",
-        "Absolute_Salinity_g_kg",
-    ),
-) -> pd.DataFrame:
-    """Collapse repeated profile levels to unique geographic points.
-
-    The function keeps one row per ``(profile, source_file)`` pair, retaining
-    the first occurrence of metadata/coordinate columns and aggregating the
-    TEOS-10 diagnostic columns with ``aggregator``.
-    """
-
-    group_keys = [UDASH_COLUMNS["profile"], "source_file"]
-
-    aggregations: dict[str, Callable | str] = {
-        UDASH_COLUMNS["longitude_deg"]: "first",
-        UDASH_COLUMNS["latitude_deg"]: "first",
-        UDASH_COLUMNS["timestamp"]: "first",
-        UDASH_COLUMNS["cruise"]: "first",
-        UDASH_COLUMNS["station"]: "first",
-        UDASH_COLUMNS["platform"]: "first",
-        UDASH_COLUMNS["instrument_type"]: "first",
-    }
-    for column in value_columns:
-        if column in df.columns:
-            aggregations[column] = aggregator
-
-    aggregated = df.groupby(group_keys, as_index=False).agg(aggregations)
-    return aggregated
-
-
-def _prepare_map_axes(ax=None):
-    import matplotlib.pyplot as plt
-
-    if ax is not None:
-        return ax
-
-    fig, ax = plt.subplots(figsize=(6, 6))
-    return ax
-
-
-def plot_profile_location_map(
-    df: pd.DataFrame,
-    *,
-    ax=None,
-    annotate: bool = False,
-    **scatter_kwargs,
-):
-    """Plot the geographic location of each profile on a latitude/longitude map."""
-
-    ax = _prepare_map_axes(ax)
-
-    aggregated = aggregate_profiles(df)
-    lon = aggregated[UDASH_COLUMNS["longitude_deg"]]
-    lat = aggregated[UDASH_COLUMNS["latitude_deg"]]
-    scatter_defaults = {"s": 120, "color": "tab:blue", "edgecolor": "black"}
-    scatter_defaults.update(scatter_kwargs)
-
-    ax.scatter(lon, lat, **scatter_defaults)
-    ax.set_xlabel("Longitude [deg]")
-    ax.set_ylabel("Latitude [deg]")
-    ax.set_title("UDASH profile locations")
-
-    if annotate:
-        for _, row in aggregated.iterrows():
-            label = f"{row[UDASH_COLUMNS['cruise']]} / {row[UDASH_COLUMNS['station']]}"
-            ax.annotate(label, (row[UDASH_COLUMNS["longitude_deg"]], row[UDASH_COLUMNS["latitude_deg"]]))
-
-    return ax
-
-
-def plot_profile_variable_map(
-    df: pd.DataFrame,
-    *,
-    column: str = "Density_kg_m3",
-    aggregator: str | Callable[[pd.Series], float] = "mean",
-    ax=None,
-    cmap: str = "viridis",
-    colorbar: bool = True,
-    **scatter_kwargs,
-):
-    """Create a map coloured by an aggregated TEOS-10 diagnostic column."""
-
-    import matplotlib.pyplot as plt
-
-    ax = _prepare_map_axes(ax)
-
-    aggregated = aggregate_profiles(df, aggregator=aggregator, value_columns=(column,))
-    if column not in aggregated:
-        raise KeyError(f"Column '{column}' not found in DataFrame; available columns: {list(df.columns)}")
-
-    lon = aggregated[UDASH_COLUMNS["longitude_deg"]]
-    lat = aggregated[UDASH_COLUMNS["latitude_deg"]]
-    values = aggregated[column]
-
-    scatter_defaults = {"s": 150, "cmap": cmap, "edgecolor": "black"}
-    scatter_defaults.update(scatter_kwargs)
-
-    scatter = ax.scatter(lon, lat, c=values, **scatter_defaults)
-    ax.set_xlabel("Longitude [deg]")
-    ax.set_ylabel("Latitude [deg]")
-    ax.set_title(f"UDASH profile {column} ({aggregator})")
-
-    if colorbar:
-        plt.colorbar(scatter, ax=ax, label=column)
-
-    return ax
-
-
-def plot_profile_diagnostic_maps(
+def plot_teos10_diagnostics(
     df: pd.DataFrame,
     *,
     columns: Sequence[str] = (
@@ -392,69 +230,44 @@ def plot_profile_diagnostic_maps(
         "Conservative_Temp_degC",
         "Density_kg_m3",
     ),
-    aggregator: str | Callable[[pd.Series], float] = "mean",
-    figsize: tuple[float, float] = (15.0, 5.0),
-    cmap: str = "viridis",
-    colorbar: bool = True,
-    scatter_kwargs: Optional[dict] = None,
-):
-    """Plot a small-multiple grid of TEOS-10 diagnostic maps.
-
-    Parameters
-    ----------
-    df:
-        DataFrame produced by :func:`load_udash_file`.
-    columns:
-        Iterable of column names to visualise. The default renders the three
-        TEOS-10 diagnostics computed by this helper module.
-    aggregator:
-        Aggregation applied when collapsing profile levels to unique
-        locations.
-    figsize:
-        Size of the generated matplotlib figure.
-    cmap:
-        Colormap applied to all subplots.
-    colorbar:
-        If ``True`` (default), add one colorbar per subplot.
-    scatter_kwargs:
-        Optional dictionary forwarded to :meth:`matplotlib.axes.Axes.scatter`.
-
-    Returns
-    -------
-    matplotlib.figure.Figure, list[matplotlib.axes.Axes]
-        Figure and list of axes for further customisation in notebooks.
-    """
+    depth_column: str = UDASH_COLUMNS["depth_m"],
+    share_depth_axis: bool = True,
+    figsize: tuple[float, float] = (7.0, 9.0),
+    marker: str = "o",
+) -> tuple["matplotlib.figure.Figure", Sequence["matplotlib.axes.Axes"]]:
+    """Plot TEOS-10 diagnostic columns against depth using matplotlib."""
 
     import matplotlib.pyplot as plt
 
-    if scatter_kwargs is None:
-        scatter_kwargs = {}
+    missing_columns = [column for column in columns if column not in df.columns]
+    if missing_columns:
+        raise KeyError(
+            "Missing required columns: " + ", ".join(missing_columns)
+        )
 
-    aggregated = aggregate_profiles(df, aggregator=aggregator, value_columns=columns)
-    lon = aggregated[UDASH_COLUMNS["longitude_deg"]]
-    lat = aggregated[UDASH_COLUMNS["latitude_deg"]]
+    if depth_column not in df.columns:
+        raise KeyError(f"Depth column '{depth_column}' not found in DataFrame")
 
-    fig, axes = plt.subplots(1, len(columns), figsize=figsize, constrained_layout=True)
+    fig, axes = plt.subplots(
+        len(columns),
+        1,
+        figsize=figsize,
+        sharey=share_depth_axis,
+        constrained_layout=True,
+    )
+
     if len(columns) == 1:
         axes = [axes]
 
+    depth = df[depth_column]
+
     for ax, column in zip(axes, columns):
-        if column not in aggregated:
-            raise KeyError(
-                f"Column '{column}' not found in DataFrame; available columns: {list(df.columns)}"
-            )
-
-        ax.set_xlabel("Longitude [deg]")
-        ax.set_ylabel("Latitude [deg]")
-        ax.set_title(f"UDASH profile {column} ({aggregator})")
-
-        scatter_defaults = {"s": 150, "cmap": cmap, "edgecolor": "black"}
-        scatter_defaults.update(scatter_kwargs)
-
-        scatter = ax.scatter(lon, lat, c=aggregated[column], **scatter_defaults)
-
-        if colorbar:
-            fig.colorbar(scatter, ax=ax, label=column)
+        ax.plot(df[column], depth, marker=marker)
+        ax.set_xlabel(column.replace("_", " "))
+        ax.set_ylabel("Depth [m]")
+        ax.set_title(f"{column} vs depth")
+        ax.invert_yaxis()
+        ax.grid(True, linestyle="--", alpha=0.5)
 
     return fig, axes
 
@@ -463,8 +276,8 @@ if __name__ == "__main__":
     df = load_arctic_ocean_profile()
     print("Loaded ArcticOcean_phys_oce_1980.txt with", len(df), "levels")
     print()
-    print("Unique profile metadata:")
-    print(profile_metadata_table(df))
+    print("Profile overview:")
+    print(preview_profile_metadata(df, max_rows=None))
     print()
     print("Density summary:")
     print(
@@ -480,3 +293,9 @@ if __name__ == "__main__":
             ]
         ]
     )
+
+    import matplotlib.pyplot as plt
+
+    fig, _ = plot_teos10_diagnostics(df)
+    fig.suptitle("TEOS-10 diagnostics for ArcticOcean_phys_oce_1980.txt", y=0.99)
+    plt.show()
