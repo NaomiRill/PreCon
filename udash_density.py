@@ -14,6 +14,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional, Sequence
 
+import warnings
+
+import numpy as np
 import pandas as pd
 import gsw
 
@@ -80,18 +83,35 @@ def _read_udash_text(path: Path, missing_value: float = -999.0) -> pd.DataFrame:
 def _append_teos10_columns(df: pd.DataFrame) -> pd.DataFrame:
     """Compute Absolute Salinity, Conservative Temperature, and density."""
 
-    SA = gsw.SA_from_SP(
-        df[UDASH_COLUMNS["salinity_psu"]].to_numpy(),
-        df[UDASH_COLUMNS["pressure_dbar"]].to_numpy(),
-        df[UDASH_COLUMNS["longitude_deg"]].to_numpy(),
-        df[UDASH_COLUMNS["latitude_deg"]].to_numpy(),
-    )
-    CT = gsw.CT_from_t(
-        SA,
-        df[UDASH_COLUMNS["temperature_degC"]].to_numpy(),
-        df[UDASH_COLUMNS["pressure_dbar"]].to_numpy(),
-    )
-    rho = gsw.rho(SA, CT, df[UDASH_COLUMNS["pressure_dbar"]].to_numpy())
+    salinity = df[UDASH_COLUMNS["salinity_psu"]].to_numpy(dtype=float)
+    negative_salinity = salinity < 0
+    if np.any(negative_salinity):
+        warnings.warn(
+            "Practical Salinity contained negative values; clipping to zero per TEOS-10 guidance.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        salinity = salinity.copy()
+        salinity[negative_salinity] = 0.0
+
+    pressure = df[UDASH_COLUMNS["pressure_dbar"]].to_numpy(dtype=float)
+    longitude = df[UDASH_COLUMNS["longitude_deg"]].to_numpy(dtype=float)
+    latitude = df[UDASH_COLUMNS["latitude_deg"]].to_numpy(dtype=float)
+
+    SA = gsw.SA_from_SP(salinity, pressure, longitude, latitude)
+    negative_absolute = SA < 0
+    if np.any(negative_absolute):
+        warnings.warn(
+            "Absolute Salinity below zero encountered; clipping to zero per TEOS-10 manual (IOC, 2010).",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        SA = SA.copy()
+        SA[negative_absolute] = 0.0
+
+    temperature = df[UDASH_COLUMNS["temperature_degC"]].to_numpy(dtype=float)
+    CT = gsw.CT_from_t(SA, temperature, pressure)
+    rho = gsw.rho(SA, CT, pressure)
 
     df = df.copy()
     df["Absolute_Salinity_g_kg"] = SA
@@ -285,7 +305,7 @@ def plot_teos10_diagnostics(
     share_depth_axis: bool = True,
     figsize: tuple[float, float] = (7.0, 9.0),
     marker: str = "o",
-    marker_size: float = 15.0,
+    marker_size: float = 6.0,
 ) -> tuple["matplotlib.figure.Figure", Sequence["matplotlib.axes.Axes"]]:
     """Plot TEOS-10 diagnostic columns against depth using matplotlib."""
 
@@ -321,6 +341,7 @@ def plot_teos10_diagnostics(
         ax.grid(True, linestyle="--", alpha=0.5)
 
     fig.tight_layout()
+    fig.subplots_adjust(top=0.92)
 
     return fig, axes
 
