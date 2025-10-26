@@ -1,16 +1,6 @@
-"""Minimal helpers to compute seawater density from a single UDASH CTD file.
+"""Helpers to load one UDASH profile, compute TEOS-10 values, and plot them."""
 
-Drop this file next to your notebook and import :func:`load_udash_file`.
-
-Example
--------
->>> from udash_density import load_udash_file
->>> df = load_udash_file("UDASH/NABOS_2015_AT_001.txt")
->>> df.head()
-"""
 from __future__ import annotations
-# Postpone evaluation of annotations so the type hints below (including
-# | unions and forward references in return annotations) work on Python 3.8+.
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -38,8 +28,6 @@ __all__ = [
     "save_teos10_variables",
 ]
 
-# Column names used in UDASH tab-separated exports. Keeping them in one
-# dictionary makes it easier to adapt if the dataset schema changes.
 UDASH_COLUMNS = {
     "profile": "Prof_no",
     "cruise": "Cruise",
@@ -59,8 +47,6 @@ UDASH_COLUMNS = {
 
 @dataclass
 class UDASHProfileMetadata:
-    """Basic metadata for a UDASH profile."""
-
     profile: int
     cruise: str
     station: str
@@ -69,38 +55,6 @@ class UDASHProfileMetadata:
     timestamp: str
     longitude_deg: float
     latitude_deg: float
-
-
-def _read_udash_text(path: Path, missing_value: float = -999.0) -> pd.DataFrame:
-    """Read a UDASH text file into a DataFrame with missing values handled."""
-
-    df = pd.read_csv(
-        path,
-        delim_whitespace=True,
-        na_values=[missing_value],
-        engine="python",
-    )
-    return df
-
-
-def _append_teos10_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Compute Absolute Salinity, Conservative Temperature, and density."""
-
-    salinity = df[UDASH_COLUMNS["salinity_psu"]].to_numpy(dtype=float)
-    pressure = df[UDASH_COLUMNS["pressure_dbar"]].to_numpy(dtype=float)
-    longitude = df[UDASH_COLUMNS["longitude_deg"]].to_numpy(dtype=float)
-    latitude = df[UDASH_COLUMNS["latitude_deg"]].to_numpy(dtype=float)
-
-    SA = gsw.SA_from_SP(salinity, pressure, longitude, latitude)
-    temperature = df[UDASH_COLUMNS["temperature_degC"]].to_numpy(dtype=float)
-    CT = gsw.CT_from_t(SA, temperature, pressure)
-    rho = gsw.rho(SA, CT, pressure)
-
-    df = df.copy()
-    df["Absolute_Salinity_g_kg"] = SA
-    df["Conservative_Temp_degC"] = CT
-    df["Density_kg_m3"] = rho
-    return df
 
 
 def _infer_profile_year(df: pd.DataFrame) -> str:
@@ -187,20 +141,25 @@ def load_udash_file(
     """
 
     path = Path(path)
-    df = _read_udash_text(path, missing_value=missing_value)
+    df = pd.read_csv(
+        path,
+        delim_whitespace=True,
+        na_values=[missing_value],
+        engine="python",
+    )
 
     salinity_column = UDASH_COLUMNS["salinity_psu"]
     if salinity_column in df.columns:
-        salinity_values = pd.to_numeric(df[salinity_column], errors="coerce")
-        negative_mask = salinity_values < 0
+        salinity = pd.to_numeric(df[salinity_column], errors="coerce")
+        negative_mask = salinity < 0
         if negative_mask.any():
             warnings.warn(
-                "Negative practical salinity values found; treating them as missing before TEOS-10 calculations.",
+                "Negative practical salinity values found; treating them as missing.",
                 RuntimeWarning,
                 stacklevel=2,
             )
-            salinity_values[negative_mask] = np.nan
-        df[salinity_column] = salinity_values
+            salinity = salinity.mask(negative_mask)
+        df[salinity_column] = salinity
 
     required = [
         salinity_column,
@@ -212,7 +171,20 @@ def load_udash_file(
     if drop_na:
         df = df.dropna(subset=required)
 
-    df = _append_teos10_columns(df)
+    salinity = df[salinity_column].to_numpy(dtype=float)
+    pressure = df[UDASH_COLUMNS["pressure_dbar"]].to_numpy(dtype=float)
+    longitude = df[UDASH_COLUMNS["longitude_deg"]].to_numpy(dtype=float)
+    latitude = df[UDASH_COLUMNS["latitude_deg"]].to_numpy(dtype=float)
+    temperature = df[UDASH_COLUMNS["temperature_degC"]].to_numpy(dtype=float)
+
+    SA = gsw.SA_from_SP(salinity, pressure, longitude, latitude)
+    CT = gsw.CT_from_t(SA, temperature, pressure)
+    rho = gsw.rho(SA, CT, pressure)
+
+    df = df.copy()
+    df["Absolute_Salinity_g_kg"] = SA
+    df["Conservative_Temp_degC"] = CT
+    df["Density_kg_m3"] = rho
     df.insert(0, "source_file", path.name)
 
     if save_output:
@@ -270,7 +242,7 @@ def preview_level_samples(
     *,
     samples: int = 12,
 ) -> pd.DataFrame:
-    """Return an evenly spaced subset of profile levels for console previews."""
+    """Return evenly spaced profile rows for console previews."""
 
     if samples <= 0 or df.empty:
         return df.head(0)
@@ -338,7 +310,7 @@ def plot_teos10_diagnostics(
     share_depth_axis: bool = True,
     figsize: tuple[float, float] = (7.0, 9.0),
     marker: str = "o",
-    marker_size: float = 1.5,
+    marker_size: float = 0.6,
 ) -> tuple["matplotlib.figure.Figure", Sequence["matplotlib.axes.Axes"]]:
     """Plot TEOS-10 diagnostic columns against depth using matplotlib."""
 
