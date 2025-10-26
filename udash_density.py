@@ -29,6 +29,7 @@ __all__ = [
     "summarize_profiles",
     "preview_profile_metadata",
     "plot_teos10_diagnostics",
+    "save_teos10_variables",
 ]
 
 # Column names used in UDASH tab-separated exports. Keeping them in one
@@ -99,11 +100,54 @@ def _append_teos10_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _infer_profile_year(df: pd.DataFrame) -> str:
+    """Infer the profile year from the timestamp column if possible."""
+
+    timestamp_column = UDASH_COLUMNS["timestamp"]
+    if timestamp_column not in df.columns:
+        return "unknown"
+
+    timestamps = df[timestamp_column].dropna().astype(str)
+    if timestamps.empty:
+        return "unknown"
+
+    first_value = timestamps.iloc[0]
+    try:
+        year = pd.to_datetime(first_value).year
+    except (TypeError, ValueError):
+        # Fall back to the first four characters if parsing fails.
+        year = str(first_value)[:4]
+    return str(year)
+
+
+def save_teos10_variables(
+    df: pd.DataFrame,
+    *,
+    source_path: Path,
+    output_root: Path = Path("Density"),
+) -> Path:
+    """Persist the computed TEOS-10 variables to a year-specific text file."""
+
+    year = _infer_profile_year(df)
+    target_dir = output_root / f"{year}"
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    output_path = target_dir / f"{source_path.stem}_teos10.txt"
+    df[[
+        "Absolute_Salinity_g_kg",
+        "Conservative_Temp_degC",
+        "Density_kg_m3",
+    ]].to_csv(output_path, sep="\t", index=False, float_format="%.6f")
+    return output_path
+
+
 def load_udash_file(
     path: str | Path,
     *,
     missing_value: float = -999.0,
     drop_na: bool = True,
+    save_output: bool = True,
+    output_root: Path = Path("Density"),
 ) -> pd.DataFrame:
     """Load a single UDASH text file and compute density columns.
 
@@ -140,6 +184,9 @@ def load_udash_file(
 
     df = _append_teos10_columns(df)
     df.insert(0, "source_file", path.name)
+
+    if save_output:
+        save_teos10_variables(df, source_path=path, output_root=output_root)
     return df
 
 
@@ -148,6 +195,8 @@ def load_arctic_ocean_profile(
     *,
     missing_value: float = -999.0,
     drop_na: bool = True,
+    save_output: bool = True,
+    output_root: Path = Path("Density"),
 ) -> pd.DataFrame:
     """Shortcut for the ``ArcticOcean_phys_oce_1980.txt`` UDASH profile."""
 
@@ -155,6 +204,8 @@ def load_arctic_ocean_profile(
         path,
         missing_value=missing_value,
         drop_na=drop_na,
+        save_output=save_output,
+        output_root=output_root,
     )
 
 
@@ -234,6 +285,7 @@ def plot_teos10_diagnostics(
     share_depth_axis: bool = True,
     figsize: tuple[float, float] = (7.0, 9.0),
     marker: str = "o",
+    marker_size: float = 15.0,
 ) -> tuple["matplotlib.figure.Figure", Sequence["matplotlib.axes.Axes"]]:
     """Plot TEOS-10 diagnostic columns against depth using matplotlib."""
 
@@ -253,7 +305,6 @@ def plot_teos10_diagnostics(
         1,
         figsize=figsize,
         sharey=share_depth_axis,
-        constrained_layout=True,
     )
 
     if len(columns) == 1:
@@ -262,12 +313,14 @@ def plot_teos10_diagnostics(
     depth = df[depth_column]
 
     for ax, column in zip(axes, columns):
-        ax.plot(df[column], depth, marker=marker)
+        ax.scatter(df[column], depth, s=marker_size, marker=marker)
         ax.set_xlabel(column.replace("_", " "))
         ax.set_ylabel("Depth [m]")
         ax.set_title(f"{column} vs depth")
         ax.invert_yaxis()
         ax.grid(True, linestyle="--", alpha=0.5)
+
+    fig.tight_layout()
 
     return fig, axes
 
@@ -297,5 +350,6 @@ if __name__ == "__main__":
     import matplotlib.pyplot as plt
 
     fig, _ = plot_teos10_diagnostics(df)
-    fig.suptitle("TEOS-10 diagnostics for ArcticOcean_phys_oce_1980.txt", y=0.99)
+    fig.suptitle("TEOS-10 diagnostics for ArcticOcean_phys_oce_1980.txt", y=0.98)
+    fig.tight_layout(rect=[0.0, 0.0, 1.0, 0.96])
     plt.show()
