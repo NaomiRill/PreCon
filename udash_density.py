@@ -100,13 +100,12 @@ def save_teos10_variables(
     source_path: Path,
     output_root: Path = Path("Density"),
 ) -> Path:
-    """I write the TEOS-10 results to Density/<year>/... so mapping is easy later."""
+    """I write the TEOS-10 results to Density/ with the year at the start."""
 
-    year = _infer_profile_year(df)  # I figure out where the file should live inside Density/.
-    target_dir = output_root / f"{year}"  # I compose the directory path for that year.
-    target_dir.mkdir(parents=True, exist_ok=True)  # I ensure the directory exists before writing.
+    year = _infer_profile_year(df)  # I still pull out the profile year for naming purposes.
+    output_root.mkdir(parents=True, exist_ok=True)  # I make sure the main Density/ folder exists without subfolders.
 
-    output_path = target_dir / f"{source_path.stem}_teos10.txt"
+    output_path = output_root / f"{year}_{source_path.stem}_teos10.txt"  # I prefix the file name with the year directly.
 
     export_columns = [
         UDASH_COLUMNS["longitude_deg"],  # I always keep longitude because mapping depends on it.
