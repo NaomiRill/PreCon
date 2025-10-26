@@ -25,10 +25,12 @@ __all__ = [
     "DEFAULT_UDASH_FILE",
     "load_udash_file",
     "load_arctic_ocean_profile",
+    "profile_metadata_table",
     "georeference_levels",
     "aggregate_profiles",
     "plot_profile_location_map",
     "plot_profile_variable_map",
+    "plot_profile_diagnostic_maps",
 ]
 
 # Column names used in UDASH tab-separated exports. Keeping them in one
@@ -156,6 +158,30 @@ def load_arctic_ocean_profile(
         missing_value=missing_value,
         drop_na=drop_na,
     )
+
+
+def profile_metadata_table(df: pd.DataFrame) -> pd.DataFrame:
+    """Return the unique profile metadata combinations in ``df``.
+
+    The resulting table is useful for quickly inspecting which profiles and
+    deployments are present in the dataset, mirroring the columns the user
+    requested to view in the notebook output.
+    """
+
+    columns = [
+        "source_file",
+        UDASH_COLUMNS["profile"],
+        UDASH_COLUMNS["cruise"],
+        UDASH_COLUMNS["station"],
+        UDASH_COLUMNS["platform"],
+        UDASH_COLUMNS["instrument_type"],
+    ]
+    metadata = (
+        df.loc[:, columns]
+        .drop_duplicates()
+        .reset_index(drop=True)
+    )
+    return metadata
 
 
 def iter_profile_metadata(df: pd.DataFrame) -> Iterable[UDASHProfileMetadata]:
@@ -358,16 +384,94 @@ def plot_profile_variable_map(
     return ax
 
 
+def plot_profile_diagnostic_maps(
+    df: pd.DataFrame,
+    *,
+    columns: Sequence[str] = (
+        "Absolute_Salinity_g_kg",
+        "Conservative_Temp_degC",
+        "Density_kg_m3",
+    ),
+    aggregator: str | Callable[[pd.Series], float] = "mean",
+    figsize: tuple[float, float] = (15.0, 5.0),
+    cmap: str = "viridis",
+    colorbar: bool = True,
+    scatter_kwargs: Optional[dict] = None,
+):
+    """Plot a small-multiple grid of TEOS-10 diagnostic maps.
+
+    Parameters
+    ----------
+    df:
+        DataFrame produced by :func:`load_udash_file`.
+    columns:
+        Iterable of column names to visualise. The default renders the three
+        TEOS-10 diagnostics computed by this helper module.
+    aggregator:
+        Aggregation applied when collapsing profile levels to unique
+        locations.
+    figsize:
+        Size of the generated matplotlib figure.
+    cmap:
+        Colormap applied to all subplots.
+    colorbar:
+        If ``True`` (default), add one colorbar per subplot.
+    scatter_kwargs:
+        Optional dictionary forwarded to :meth:`matplotlib.axes.Axes.scatter`.
+
+    Returns
+    -------
+    matplotlib.figure.Figure, list[matplotlib.axes.Axes]
+        Figure and list of axes for further customisation in notebooks.
+    """
+
+    import matplotlib.pyplot as plt
+
+    if scatter_kwargs is None:
+        scatter_kwargs = {}
+
+    aggregated = aggregate_profiles(df, aggregator=aggregator, value_columns=columns)
+    lon = aggregated[UDASH_COLUMNS["longitude_deg"]]
+    lat = aggregated[UDASH_COLUMNS["latitude_deg"]]
+
+    fig, axes = plt.subplots(1, len(columns), figsize=figsize, constrained_layout=True)
+    if len(columns) == 1:
+        axes = [axes]
+
+    for ax, column in zip(axes, columns):
+        if column not in aggregated:
+            raise KeyError(
+                f"Column '{column}' not found in DataFrame; available columns: {list(df.columns)}"
+            )
+
+        ax.set_xlabel("Longitude [deg]")
+        ax.set_ylabel("Latitude [deg]")
+        ax.set_title(f"UDASH profile {column} ({aggregator})")
+
+        scatter_defaults = {"s": 150, "cmap": cmap, "edgecolor": "black"}
+        scatter_defaults.update(scatter_kwargs)
+
+        scatter = ax.scatter(lon, lat, c=aggregated[column], **scatter_defaults)
+
+        if colorbar:
+            fig.colorbar(scatter, ax=ax, label=column)
+
+    return fig, axes
+
+
 if __name__ == "__main__":
     df = load_arctic_ocean_profile()
     print("Loaded ArcticOcean_phys_oce_1980.txt with", len(df), "levels")
     print()
-    print(df.head())
+    print("Unique profile metadata:")
+    print(profile_metadata_table(df))
     print()
     print("Density summary:")
     print(
-        summarize_profiles(df)[
+        summarize_profiles(df, by=None)[
             [
+                UDASH_COLUMNS["profile"],
+                "source_file",
                 "n_levels",
                 "min_pressure",
                 "max_pressure",
